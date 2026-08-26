@@ -1,0 +1,12 @@
+[project]
+name = "streamlink-plugins-drm"
+version = "0.1.0"
+description = "Streamlink plugins for sites with DRM-protected media"
+readme = "README.md"
+authors = [
+    { name = "mrdhaha", email = "mrdhaha@proton.me" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "streamlink>=8.5.0",
+]
