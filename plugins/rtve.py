@@ -263,7 +263,7 @@ class Rtve(Plugin):
         log.debug("Resolved subtitle reference: %s", subtitle_ref)
         try:
             subs = self.session.http.get(
-                f"{subtitle_ref}.json",
+                url_concat(subtitle_ref, ".json"),
                 schema=self._SUBTITLE_SCHEMA,
             )
         except PluginError:
