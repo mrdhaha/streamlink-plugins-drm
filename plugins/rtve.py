@@ -1,4 +1,6 @@
 """
+Based on the Streamlink RTVE plugin. Streamlink copyright notice below.
+
 Copyright (c) 2011-2016, Christopher Rosell
 Copyright (c) 2016-2026, Streamlink Team
 All rights reserved.
