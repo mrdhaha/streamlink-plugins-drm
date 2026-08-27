@@ -1,4 +1,5 @@
 import re
+from typing import ClassVar
 
 from streamlink.logger import getLogger
 from streamlink.options import Options
@@ -10,19 +11,18 @@ from streamlink.utils.url import url_concat
 log = getLogger(__name__)
 
 
-BASE_URL = "https://www.canalrcn.com"
-HEADERS = {
-    "Referer": f"{BASE_URL}/",
-    "Origin": BASE_URL,
-}
-
-
 @pluginmatcher(re.compile(r"https?://(?:www\.)?canalrcn\.com/[^/]+/player/(?P<id>[^/?#]+)"))
 @pluginargument(
     "widevine-device",
     help="Path to the Widevine device (.wvd) file.",
 )
 class CanalRCN(Plugin):
+    _BASE_URL: ClassVar[str] = "https://www.canalrcn.com"
+    _HEADERS: ClassVar[dict[str, str]] = {
+        "Referer": f"{_BASE_URL}/",
+        "Origin": _BASE_URL,
+    }
+
     _CONFIG_SCHEMA = validate.Schema(
         re.compile(
             r"""
@@ -95,12 +95,12 @@ class CanalRCN(Plugin):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.session.http.headers.update(HEADERS)
+        self.session.http.headers.update(self._HEADERS)
 
     def _get_streams(self):
         log.debug("Loading site configuration")
         client_key, unity_api = self.session.http.get(
-            url_concat(BASE_URL, "env-config.js"),
+            url_concat(self._BASE_URL, "env-config.js"),
             schema=self._CONFIG_SCHEMA,
         )
 
