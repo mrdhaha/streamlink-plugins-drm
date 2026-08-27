@@ -37,13 +37,14 @@ from urllib.parse import urlparse
 
 from streamlink.logger import getLogger
 from streamlink.options import Options
-from streamlink.plugin import Plugin, PluginError, pluginmatcher, pluginargument
+from streamlink.plugin import Plugin, PluginError, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.dash import DASHStream
 from streamlink.stream.ffmpegmux import MuxedStream
 from streamlink.stream.hls import HLSStream
 from streamlink.stream.http import HTTPStream
 from streamlink.utils.url import update_scheme, url_concat
+
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -177,9 +178,7 @@ class Rtve(Plugin):
     _API_TOKEN_URL = url_concat(_API_DOMAIN, "/api/token/{id}")
 
     _DATA_SETUP_SCHEMA = validate.Schema(
-        validate.xml_xpath_string(
-            ".//*[contains(@class,'videoPlayer')][@data-setup][1]/@data-setup"
-        ),
+        validate.xml_xpath_string(".//*[contains(@class,'videoPlayer')][@data-setup][1]/@data-setup"),
         validate.parse_json(),
         {
             "idAsset": validate.any(
@@ -193,10 +192,7 @@ class Rtve(Plugin):
 
     _IS_VOD_SCHEMA = validate.Schema(
         validate.xml_xpath_string(
-            ".//link[@rel='stylesheet']["
-            "contains(@href, 'rtve.play.pf_video.') or "
-            "contains(@href, 'rtve.play.pf_directo.')"
-            "][1]/@href"
+            ".//link[@rel='stylesheet'][contains(@href, 'rtve.play.pf_')][1]/@href"
         ),
         validate.any(
             validate.all(

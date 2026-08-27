@@ -10,3 +10,98 @@ requires-python = ">=3.10"
 dependencies = [
     "streamlink>=8.5.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff==0.16.4",
+    "ty==0.0.74",
+    "mypy[faster-cache]==2.3.1",
+]
+
+[tool.ruff]
+line-length = 128
+preview = true
+output-format = "full"
+
+[tool.ruff.format]
+preview = true
+line-ending = "lf"
+quote-style = "double"
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "PLC",
+    "PLE",
+    "PLW",
+    "I",
+    "ASYNC",
+    "A",
+    "B",
+    "COM",
+    "C4",
+    "DTZ",
+    "ISC",
+    "LOG",
+    "PIE",
+    "T20",
+    "TC",
+    "UP",
+    "RUF",
+]
+ignore = [
+    "async-function-with-timeout",
+    "builtin-attribute-shadowing",
+    "compare-to-empty-string",
+    "explicit-string-concatenation",
+    "missing-f-string-syntax",
+    "missing-trailing-comma",
+    "parenthesize-chained-operators",
+    "redefined-loop-name",
+    "stdlib-module-shadowing",
+    "unnecessary-collection-call",
+    "unnecessary-dunder-call",
+    "unsorted-dunder-all",
+]
+future-annotations = true
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-builtins]
+builtins-ignorelist = [
+    "BaseExceptionGroup",
+    "ExceptionGroup",
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-quotes]
+avoid-escape = false
+
+[tool.ruff.lint.flake8-implicit-str-concat]
+allow-multiline = false
+
+[tool.ty.environment]
+python-version = "3.10"
+python-platform = "all"
+
+[tool.ty.src]
+include = [
+    "plugins/**/*.py",
+]
+
+[tool.mypy]
+python_version = "3.10"
+show_error_codes = true
+show_error_context = true
+show_column_numbers = true
+warn_no_return = false
+files = [
+    "plugins/",
+]

@@ -17,11 +17,7 @@ HEADERS = {
 }
 
 
-@pluginmatcher(
-    re.compile(
-        r"https?://(?:www\.)?canalrcn\.com/[^/]+/player/(?P<id>[^/?#]+)"
-    )
-)
+@pluginmatcher(re.compile(r"https?://(?:www\.)?canalrcn\.com/[^/]+/player/(?P<id>[^/?#]+)"))
 @pluginargument(
     "widevine-device",
     help="Path to the Widevine device (.wvd) file.",
@@ -52,7 +48,7 @@ class CanalRCN(Plugin):
             "unity_api",
         ),
     )
-    
+
     _TOKEN_SCHEMA = validate.Schema(
         validate.parse_json(),
         {
@@ -63,7 +59,7 @@ class CanalRCN(Plugin):
         validate.get("token"),
         validate.get("access_token"),
     )
-    
+
     _ENTITLEMENT_SCHEMA = validate.Schema(
         validate.filter(
             lambda e: e.get("contentType") == "application/dash+xml",
@@ -87,7 +83,7 @@ class CanalRCN(Plugin):
             ("drm", "widevine", "licenseAcquisitionUrl"),
         ),
     )
-    
+
     _METADATA_SCHEMA = validate.Schema(
         validate.parse_json(),
         {
@@ -96,7 +92,7 @@ class CanalRCN(Plugin):
         validate.get("entitlements"),
         _ENTITLEMENT_SCHEMA,
     )
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.session.http.headers.update(HEADERS)
@@ -107,7 +103,7 @@ class CanalRCN(Plugin):
             url_concat(BASE_URL, "env-config.js"),
             schema=self._CONFIG_SCHEMA,
         )
-        
+
         log.debug("Requesting public API token")
         token = self.session.http.post(
             url_concat(unity_api, "auth", "public"),
@@ -120,7 +116,7 @@ class CanalRCN(Plugin):
             },
             schema=self._TOKEN_SCHEMA,
         )
-        
+
         log.debug("Requesting metadata for content ID: %s", self.match["id"])
         mpd_url, license_url = self.session.http.get(
             url_concat(unity_api, "contents", self.match["id"], "url"),
