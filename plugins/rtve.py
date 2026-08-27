@@ -191,9 +191,7 @@ class Rtve(Plugin):
     )
 
     _IS_VOD_SCHEMA = validate.Schema(
-        validate.xml_xpath_string(
-            ".//link[@rel='stylesheet'][contains(@href, 'rtve.play.pf_')][1]/@href"
-        ),
+        validate.xml_xpath_string(".//link[@rel='stylesheet'][contains(@href, 'rtve.play.pf_')][1]/@href"),
         validate.any(
             validate.all(
                 validate.contains("rtve.play.pf_video."),
