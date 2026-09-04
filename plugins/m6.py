@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 import uuid
 
 from streamlink.logger import getLogger
 from streamlink.options import Options
 from streamlink.plugin import Plugin, PluginError, pluginargument, pluginmatcher
+from streamlink.plugin.api import validate
 
 log = getLogger(__name__)
 
@@ -61,10 +61,45 @@ class M6(Plugin):
         "live/{channel}/layout?blockPage=1&nbPages=2"
     )
 
-    _LICENSE_URL = (
-        "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
-        "|User-Agent={user_agent}"
-        "&Host=lic.drmtoday.com&x-dt-auth-token={token}"
+    _LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
+
+    _LOGIN_SCHEMA = validate.Schema(
+        validate.parse_json(),
+        {
+            validate.optional("UID"): str,
+            validate.optional("UIDSignature"): str,
+            validate.optional("signatureTimestamp"): str,
+            validate.optional("errorMessage"): str,
+            validate.optional("errorDetails"): str,
+        },
+        validate.union_get(
+            "UID",
+            "UIDSignature",
+            "signatureTimestamp",
+            "errorMessage",
+            "errorDetails",
+        ),
+    )
+
+    _TOKEN_SCHEMA = validate.Schema(
+        validate.parse_json(),
+        {
+            "token": str,
+        },
+        validate.get("token"),
+    )
+
+    _ASSETS_SCHEMA = validate.Schema(
+        validate.parse_json(),
+        {
+            "blocks": [dict],
+        },
+        validate.get("blocks"),
+        validate.filter(
+            lambda block: block.get("content", {}).get("contentTemplateId") == "Player",
+        ),
+        validate.get(0),
+        validate.get(("content", "items", 0, "itemContent", "video", "assets")),
     )
 
     _API_KEY = "3_hH5KBv25qZTd_sURpixbQW6a4OsiIzIEF2Ei_2H7TXTGLJb_1Hr4THKZianCQhWK"
@@ -78,11 +113,12 @@ class M6(Plugin):
     }
 
     @staticmethod
-    def _json(resp):
-        try:
-            return resp.json()
-        except (ValueError, json.JSONDecodeError) as err:
-            raise PluginError(f"Invalid JSON response: {err}") from err
+    def _auth_headers(jwt: str) -> dict[str, str]:
+        return {
+            "X-Customer-Name": "m6web",
+            "X-Client-Release": "6.49.0",
+            "Authorization": f"Bearer {jwt}",
+        }
 
     def _get_login_token(self) -> tuple[str, str]:
         username = self.get_option("username")
@@ -104,16 +140,22 @@ class M6(Plugin):
             "Referer": "https://auth.m6.fr/",
         }
 
-        resp = self.session.http.post(self._LOGIN_URL, data=payload, headers=headers)
-        data = self._json(resp)
+        log.debug("Requesting M6 account authentication")
 
-        if "UID" not in data:
-            message = data.get("errorMessage") or data.get("errorDetails") or "login failed"
+        account_id, signature, timestamp, error_message, error_details = (
+            self.session.http.post(
+                self._LOGIN_URL,
+                data=payload,
+                headers=headers,
+                schema=self._LOGIN_SCHEMA,
+            )
+        )
+
+        if not account_id:
+            message = error_message or error_details or "login failed"
             raise PluginError(f"Login failed: {message}")
 
-        account_id = str(data["UID"])
-        signature = data["UIDSignature"]
-        timestamp = str(data["signatureTimestamp"])
+        log.debug("Authentication successful")
 
         jwt_headers = {
             "X-Auth-device-id": self._DEVICE_ID,
@@ -125,180 +167,116 @@ class M6(Plugin):
             "X-Customer-name": "m6web",
         }
 
-        jwt_resp = self.session.http.get(self._JWT_URL, headers=jwt_headers)
-        jwt_data = self._json(jwt_resp)
+        jwt = self.session.http.get(
+            self._JWT_URL,
+            headers=jwt_headers,
+            schema=self._TOKEN_SCHEMA,
+        )
 
-        try:
-            return account_id, jwt_data["token"]
-        except KeyError as err:
-            raise PluginError("Could not obtain an authentication token") from err
+        return account_id, jwt
 
-    def _get_upfront_token(self, account_id: str, jwt: str, *, video_id: str | None = None,
-                           channel: str | None = None) -> str:
-        headers = {
-            "X-Customer-Name": "m6web",
-            "X-Client-Release": "6.49.0",
-            "Authorization": f"Bearer {jwt}",
-        }
+    def _get_upfront_token(self, url: str, jwt: str) -> str:
+        log.debug("Requesting playback token")
 
-        if video_id is not None:
-            url = self._REPLAY_TOKEN_URL.format(
-                account_id=account_id,
-                video_id=video_id,
-            )
-        elif channel is not None:
-            url = self._LIVE_TOKEN_URL.format(
-                account_id=account_id,
-                channel=channel,
-            )
-        else:
-            raise PluginError("Missing token target")
+        token = self.session.http.get(
+            url,
+            headers=self._auth_headers(jwt),
+            schema=self._TOKEN_SCHEMA,
+        )
 
-        data = self._json(self.session.http.get(url, headers=headers))
+        log.debug("Resolved playback token")
 
-        try:
-            return data["token"]
-        except KeyError as err:
-            raise PluginError("Could not obtain a playback token") from err
+        return token
 
     @staticmethod
     def _select_asset(assets, **filters):
-        priority = {"sd": 0, "hd": 1}
-        manifests = []
+        candidates = [
+            asset
+            for asset in assets
+            if all(asset.get(key) == value for key, value in filters.items())
+               and asset.get("path")
+        ]
 
-        for asset in assets or []:
-            if any(asset.get(k) != v for k, v in filters.items()):
-                continue
-
-            quality = str(asset.get("quality", "")).lower()
-            url = asset.get("path")
-            if not url:
-                continue
-
-            if (quality, url) not in manifests:
-                manifests.append((quality, url))
-
-        if not manifests:
+        if not candidates:
             return None
 
-        return sorted(
-            manifests,
-            key=lambda item: priority.get(item[0], -1),
-            reverse=True,
-        )[0][1]
+        return max(
+            candidates,
+            key=lambda asset: {"sd": 0, "hd": 1}.get(
+                str(asset.get("quality", "")).lower(),
+                -1,
+            ),
+        )["path"]
 
-    def _license_url(self, token: str) -> str:
-        return self._LICENSE_URL.format(
-            user_agent=self.session.http.headers["User-Agent"],
-            token=token,
-        )
-
-    def _get_replay_streams(self, video_id: str):
+    def _get_streams(self):
         account_id, jwt = self._get_login_token()
 
-        token = self._get_upfront_token(account_id, jwt, video_id=video_id)
+        if self.matches["vod"]:
+            self.id = self.match["video_id"]
 
-        headers = {
-            "X-Customer-Name": "m6web",
-            "X-Client-Release": "6.49.0",
-            "Authorization": f"Bearer {jwt}",
-        }
+            if not self.id:
+                return
 
-        data = self._json(
-            self.session.http.get(
-                self._VIDEO_URL.format(video_id=video_id),
-                headers=headers,
+            token_url = self._REPLAY_TOKEN_URL.format(
+                account_id=account_id,
+                video_id=self.id,
             )
+            url = self._VIDEO_URL.format(video_id=self.id)
+            provider = "usp"
+
+        elif self.matches["live"]:
+            self.id = self.match["channel"]
+
+            if not self.id:
+                return
+
+            live_id = self._CHANNELS.get(self.id, self.id)
+
+            token_url = self._LIVE_TOKEN_URL.format(
+                account_id=account_id,
+                channel=f"dashcenc_{live_id}",
+            )
+            url = self._LIVE_URL.format(channel=self.id)
+            provider = "delta"
+
+        else:
+            return
+
+        token = self._get_upfront_token(token_url, jwt)
+
+        assets = self.session.http.get(
+            url,
+            headers=self._auth_headers(jwt),
+            schema=self._ASSETS_SCHEMA,
         )
-
-        try:
-            player = next(
-                block
-                for block in data["blocks"]
-                if block["content"]["contentTemplateId"] == "Player"
-            )
-            assets = player["content"]["items"][0]["itemContent"]["video"]["assets"]
-        except (KeyError, IndexError, StopIteration, TypeError) as err:
-            raise PluginError(f"Unable to resolve video {video_id}") from err
 
         manifest = self._select_asset(
             assets,
-            provider="usp",
+            provider=provider,
             format="dashcenc",
             container="h264",
         )
 
-        options = Options({
-            "license-server": self._license_url(token),
-        })
-
-        if device := self.get_option("widevine-device"):
-            options.set("device", device)
-
-        return self.session.streams(
-            f"widevine://{manifest}",
-            options=options,
-        ).items()
-
-    def _get_live_streams(self, channel: str):
-        account_id, jwt = self._get_login_token()
-
-        live_id = self._CHANNELS.get(channel, channel)
-        token = self._get_upfront_token(account_id, jwt, channel=f"dashcenc_{live_id}")
-
-        headers = {
-            "X-Customer-Name": "m6web",
-            "X-Client-Release": "6.49.0",
-            "Authorization": f"Bearer {jwt}",
-        }
-
-        data = self._json(
-            self.session.http.get(
-                self._LIVE_URL.format(channel=channel),
-                headers=headers,
-            )
-        )
-
-        try:
-            player = next(
-                block
-                for block in data["blocks"]
-                if block["content"]["contentTemplateId"] == "Player"
-            )
-            assets = player["content"]["items"][0]["itemContent"]["video"]["assets"]
-        except (KeyError, IndexError, StopIteration, TypeError) as err:
-            raise PluginError(f"Unable to resolve live channel {channel}") from err
-
-        manifest = self._select_asset(
-            assets,
-            provider="delta",
-            format="dashcenc",
-            container="h264",
-        )
         if not manifest:
             raise PluginError("Could not resolve manifest")
 
         options = Options({
-            "license-server": self._license_url(token),
+            "license-url": self._LICENSE_URL,
+            "license-header": {
+                "Host": "lic.drmtoday.com",
+                "x-dt-auth-token": token,
+            },
+            "license-format": "json",
+            "license-path": ["license"],
         })
 
         if device := self.get_option("widevine-device"):
             options.set("device", device)
 
-        return self.session.streams(
+        yield from self.session.streams(
             f"widevine://{manifest}",
             options=options,
         ).items()
-
-    def _get_streams(self):
-        if self.matches["vod"]:
-            self.id = self.match["video_id"]
-            if self.id:
-                yield from self._get_replay_streams(self.id)
-        elif self.matches["live"]:
-            self.id = self.match["channel"]
-            if self.id:
-                yield from self._get_live_streams(self.id)
 
 
 __plugin__ = M6
