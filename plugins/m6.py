@@ -14,7 +14,7 @@ log = getLogger(__name__)
 @pluginmatcher(
     name="live",
     pattern=re.compile(
-        r"https?://(?:www\.)?m6\.fr/(?P<channel_name>[^/?#]+)"
+        r"https?://(?:www\.)?m6\.fr/(?P<channel>[^/?#]+)"
     ),
 )
 @pluginmatcher(
@@ -53,13 +53,12 @@ class M6(Plugin):
     )
 
     _VIDEO_URL = (
-        "https://android.middleware.6play.fr/6play/v2/platforms/"
-        "m6group_androidmob/services/6play/videos/{video_id}"
-        "?csa=6&with=clips,freemiumpacks"
+        "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/"
+        "video/clip_{video_id}/layout?blockPage=1&nbPages=2"
     )
     _LIVE_URL = (
-        "https://android.middleware.6play.fr/6play/v2/platforms/"
-        "m6group_androidmob/services/6play/live"
+        "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/"
+        "live/{channel}/layout?blockPage=1&nbPages=2"
     )
 
     _LICENSE_URL = (
@@ -70,13 +69,12 @@ class M6(Plugin):
 
     _API_KEY = "3_hH5KBv25qZTd_sURpixbQW6a4OsiIzIEF2Ei_2H7TXTGLJb_1Hr4THKZianCQhWK"
     _DEVICE_ID = '_luid_' + str(uuid.UUID(int=uuid.getnode()))
+    _PROFILE_ID = "_puid_{account_id}_DEFAULT0"
 
     _CHANNELS = {
         "m6": "M6",
         "w9": "W9",
         "6ter": "6T",
-        "rt12": "rtl2",
-        "gulli": "gulli",
     }
 
     @staticmethod
@@ -118,11 +116,13 @@ class M6(Plugin):
         timestamp = str(data["signatureTimestamp"])
 
         jwt_headers = {
-            "x-auth-gigya-signature": signature,
-            "x-auth-gigya-signature-timestamp": timestamp,
-            "x-auth-gigya-uid": account_id,
-            "x-auth-device-id": self._DEVICE_ID,
-            "x-customer-name": "m6web",
+            "X-Auth-device-id": self._DEVICE_ID,
+            "X-Auth-gigya-signature": signature,
+            "X-Auth-gigya-signature-timestamp": timestamp,
+            "X-Auth-gigya-uid": account_id,
+            "X-Auth-profile-id": self._PROFILE_ID.format(account_id=account_id),
+            "X-Client-Release": "6.49.0",
+            "X-Customer-name": "m6web",
         }
 
         jwt_resp = self.session.http.get(self._JWT_URL, headers=jwt_headers)
@@ -162,16 +162,16 @@ class M6(Plugin):
             raise PluginError("Could not obtain a playback token") from err
 
     @staticmethod
-    def _select_asset(assets, asset_type: str):
+    def _select_asset(assets, **filters):
         priority = {"sd": 0, "hd": 1}
         manifests = []
 
         for asset in assets or []:
-            if asset.get("type") != asset_type:
+            if any(asset.get(k) != v for k, v in filters.items()):
                 continue
 
-            quality = str(asset.get("video_quality", "")).lower()
-            url = asset.get("full_physical_path")
+            quality = str(asset.get("quality", "")).lower()
+            url = asset.get("path")
             if not url:
                 continue
 
@@ -195,11 +195,15 @@ class M6(Plugin):
 
     def _get_replay_streams(self, video_id: str):
         account_id, jwt = self._get_login_token()
+
         token = self._get_upfront_token(account_id, jwt, video_id=video_id)
 
         headers = {
-            "x-customer-name": "m6web",
+            "X-Customer-Name": "m6web",
+            "X-Client-Release": "6.49.0",
+            "Authorization": f"Bearer {jwt}",
         }
+
         data = self._json(
             self.session.http.get(
                 self._VIDEO_URL.format(video_id=video_id),
@@ -208,22 +212,21 @@ class M6(Plugin):
         )
 
         try:
-            assets = data["clips"][0]["assets"]
-        except (KeyError, IndexError, TypeError) as err:
+            player = next(
+                block
+                for block in data["blocks"]
+                if block["content"]["contentTemplateId"] == "Player"
+            )
+            assets = player["content"]["items"][0]["itemContent"]["video"]["assets"]
+        except (KeyError, IndexError, StopIteration, TypeError) as err:
             raise PluginError(f"Unable to resolve video {video_id}") from err
 
-        manifest = self._select_asset(assets, "usp_dashcenc_h264")
-        if not manifest:
-            raise PluginError("Could not resolve a DASH/CENC replay manifest")
-
-        try:
-            response = self.session.http.get(
-                manifest,
-                allow_redirects=False,
-            )
-            manifest = response.headers.get("Location", manifest)
-        except Exception:
-            log.debug("Unable to resolve M6 manifest redirect", exc_info=True)
+        manifest = self._select_asset(
+            assets,
+            provider="usp",
+            format="dashcenc",
+            container="h264",
+        )
 
         options = Options({
             "license-server": self._license_url(token),
@@ -240,28 +243,40 @@ class M6(Plugin):
     def _get_live_streams(self, channel: str):
         account_id, jwt = self._get_login_token()
 
-        live_id = self._CHANNELS[channel]
+        live_id = self._CHANNELS.get(channel, channel)
         token = self._get_upfront_token(account_id, jwt, channel=f"dashcenc_{live_id}")
 
-        params = {
-            "channel": live_id,
-            "with": "service_display_images,nextdiffusion,extra_data",
+        headers = {
+            "X-Customer-Name": "m6web",
+            "X-Client-Release": "6.49.0",
+            "Authorization": f"Bearer {jwt}",
         }
+
         data = self._json(
             self.session.http.get(
-                self._LIVE_URL,
-                params=params,
+                self._LIVE_URL.format(channel=channel),
+                headers=headers,
             )
         )
 
         try:
-            assets = data[live_id][0]["live"]["assets"]
-        except (KeyError, IndexError, TypeError) as err:
+            player = next(
+                block
+                for block in data["blocks"]
+                if block["content"]["contentTemplateId"] == "Player"
+            )
+            assets = player["content"]["items"][0]["itemContent"]["video"]["assets"]
+        except (KeyError, IndexError, StopIteration, TypeError) as err:
             raise PluginError(f"Unable to resolve live channel {channel}") from err
 
-        manifest = self._select_asset(assets, "delta_dashcenc_h264")
+        manifest = self._select_asset(
+            assets,
+            provider="delta",
+            format="dashcenc",
+            container="h264",
+        )
         if not manifest:
-            raise PluginError("Could not resolve a DASH/CENC live manifest")
+            raise PluginError("Could not resolve manifest")
 
         options = Options({
             "license-server": self._license_url(token),
@@ -281,7 +296,7 @@ class M6(Plugin):
             if self.id:
                 yield from self._get_replay_streams(self.id)
         elif self.matches["live"]:
-            self.id = self.match["channel_name"]
+            self.id = self.match["channel"]
             if self.id:
                 yield from self._get_live_streams(self.id)
 
