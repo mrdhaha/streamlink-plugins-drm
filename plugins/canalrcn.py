@@ -126,10 +126,10 @@ class CanalRCN(Plugin):
             schema=self._METADATA_SCHEMA,
         )
         log.debug("Resolved DASH manifest: %s", mpd_url)
-        log.debug("Resolved Widevine license server: %s", license_url)
+        log.debug("Resolved Widevine license URL: %s", license_url)
         log.debug("Delegating to Widevine plugin")
         options = {
-            "license-server": license_url,
+            "license-url": license_url,
         }
         if device := self.get_option("widevine-device"):
             options["device"] = device

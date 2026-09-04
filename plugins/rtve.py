@@ -318,13 +318,13 @@ class Rtve(Plugin):
                 self._API_TOKEN_URL.format(id=self.id),
                 schema=self._TOKEN_SCHEMA,
             )
-            log.debug("Resolved Widevine license server: %s", license_url)
+            log.debug("Resolved Widevine license URL: %s", license_url)
 
             url = self._MPD_URL.format(id=self.id)
             log.debug("Using DASH manifest: %s", url)
 
             options = {
-                "license-server": license_url,
+                "license-url": license_url,
             }
             if device := self.get_option("widevine-device"):
                 options["device"] = device
