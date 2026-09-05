@@ -132,6 +132,7 @@ class CanalRCN(Plugin):
             },
             schema=self._METADATA_SCHEMA,
         )
+        self.author = title
         mpd_url, license_url = self._ENTITLEMENT_SCHEMA.validate(entitlements)
 
         log.debug("Resolved DASH manifest: %s", mpd_url)
@@ -143,14 +144,11 @@ class CanalRCN(Plugin):
         }
         if device := self.get_option("widevine-device"):
             options["device"] = device
-        streams = self.session.streams(
+
+        return self.session.streams(
             f"widevine://{mpd_url}",
             options=Options(options),
         )
-
-        self.author = title
-
-        return streams
 
 
 __plugin__ = CanalRCN
