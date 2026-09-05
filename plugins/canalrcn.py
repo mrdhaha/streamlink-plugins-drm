@@ -87,10 +87,15 @@ class CanalRCN(Plugin):
     _METADATA_SCHEMA = validate.Schema(
         validate.parse_json(),
         {
+            "content": {
+                "title": str,
+            },
             "entitlements": [dict],
         },
-        validate.get("entitlements"),
-        _ENTITLEMENT_SCHEMA,
+        validate.union_get(
+            ("content", "title"),
+            ("entitlements",),
+        ),
     )
 
     def __init__(self, *args, **kwargs):
@@ -98,6 +103,8 @@ class CanalRCN(Plugin):
         self.session.http.headers.update(self._HEADERS)
 
     def _get_streams(self):
+        self.id = self.match["id"]
+
         log.debug("Loading site configuration")
         client_key, unity_api = self.session.http.get(
             url_concat(self._BASE_URL, "env-config.js"),
@@ -117,26 +124,33 @@ class CanalRCN(Plugin):
             schema=self._TOKEN_SCHEMA,
         )
 
-        log.debug("Requesting metadata for content ID: %s", self.match["id"])
-        mpd_url, license_url = self.session.http.get(
-            url_concat(unity_api, "contents", self.match["id"], "url"),
+        log.debug("Requesting metadata for content ID: %s", self.id)
+        title, entitlements = self.session.http.get(
+            url_concat(unity_api, "contents", self.id, "url"),
             headers={
                 "Authorization": f"JWT {token}",
             },
             schema=self._METADATA_SCHEMA,
         )
+        mpd_url, license_url = self._ENTITLEMENT_SCHEMA.validate(entitlements)
+
         log.debug("Resolved DASH manifest: %s", mpd_url)
         log.debug("Resolved Widevine license URL: %s", license_url)
+
         log.debug("Delegating to Widevine plugin")
         options = {
             "license-url": license_url,
         }
         if device := self.get_option("widevine-device"):
             options["device"] = device
-        return self.session.streams(
+        streams = self.session.streams(
             f"widevine://{mpd_url}",
             options=Options(options),
         )
+
+        self.author = title
+
+        return streams
 
 
 __plugin__ = CanalRCN
