@@ -204,6 +204,28 @@ class Rtve(Plugin):
         ),
     )
 
+    _METADATA_SCHEMA = validate.Schema(
+        validate.xml_xpath_string(
+            ".//script[@type='application/ld+json']"
+            "[contains(text(),'VideoObject')][1]/text()"
+        ),
+        validate.parse_json(),
+        {
+            "@type": str,
+            validate.optional("name"): str,
+            validate.optional("partOfSeries"): {
+                validate.optional("genre"): str,
+            },
+        },
+        validate.transform(
+            lambda data: (
+                data["@type"],
+                data.get("name") if data["@type"] == "TelevisionChannel" else None,
+                data.get("partOfSeries", {}).get("genre"),
+            ),
+        ),
+    )
+
     _TOKEN_SCHEMA = validate.Schema(
         validate.parse_json(),
         {
@@ -295,16 +317,26 @@ class Rtve(Plugin):
         ]
 
     def _get_streams(self):
-        (self.id, has_drm), is_vod = self.session.http.get(
+        page = self.session.http.get(
             self.url,
-            schema=validate.Schema(
-                validate.parse_html(),
-                validate.union((
-                    self._DATA_SETUP_SCHEMA,
-                    self._IS_VOD_SCHEMA,
-                )),
-            ),
+            schema=validate.Schema(validate.parse_html()),
         )
+
+        self.id, has_drm = self._DATA_SETUP_SCHEMA.validate(page)
+        is_vod = self._IS_VOD_SCHEMA.validate(page)
+
+        self.title = validate.Schema(
+            validate.xml_xpath_string(".//title[1]/text()"),
+        ).validate(page)
+
+        metadata_type, self.author, self.category = self._METADATA_SCHEMA.validate(page)
+
+        if metadata_type not in ("TelevisionChannel", "TVEpisode"):
+            log.warning(
+                "Unexpected JSON-LD @type: %s",
+                metadata_type,
+            )
+
         log.debug(
             "Resolved asset: id=%s, DRM=%s, VOD=%s",
             self.id,
