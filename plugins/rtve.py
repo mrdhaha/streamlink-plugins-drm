@@ -40,6 +40,7 @@ from streamlink.options import Options
 from streamlink.plugin import Plugin, PluginError, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 from streamlink.stream.dash import DASHStream
+from streamlink.stream.dash.manifest import MPDParsingError, Representation
 from streamlink.stream.ffmpegmux import MuxedStream
 from streamlink.stream.hls import HLSStream
 from streamlink.stream.http import HTTPStream
@@ -49,8 +50,46 @@ from streamlink.utils.url import update_scheme, url_concat
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    # noinspection PyProtectedMember
+    from lxml.etree import _Element
+
 
 log = getLogger(__name__)
+
+
+_NONCONFORMANT_MPD_ERRORS = {
+    "Could not find required attribute Representation@bandwidth": "RTVE DASH manifest is non-conformant (missing bandwidth on a text Representation); using compatibility workaround"
+}
+
+
+_original_representation_init = Representation.__init__
+
+
+def _patch_nonconformant_manifest():
+    """
+    Work around RTVE DASH manifests where a text Representation is missing
+    the required bandwidth attribute.
+    """
+    if Representation.__init__ is not _original_representation_init:
+        return
+
+    def _representation_init(
+        self,
+        node: _Element,
+        *args,
+        **kwargs
+    ) -> None:
+        if "bandwidth" not in node.attrib:
+            node.set("bandwidth", "1")
+
+            log.debug(
+                "RTVE non-conformant MPD workaround: added bandwidth=1 to text Representation %r",
+                node.attrib.get("id"),
+            )
+
+        _original_representation_init(self, node, *args, **kwargs)
+
+    Representation.__init__ = _representation_init
 
 
 class Base64Reader:
@@ -164,6 +203,11 @@ class ZTNR:
     re.compile(r"https?://(?:www\.)?rtve\.es/play/(?:videos|clan)/.+"),
 )
 @pluginargument(
+    "allow-nonconformant-mpd",
+    action="store_true",
+    help="Allow known non-conformant RTVE DASH manifests.",
+)
+@pluginargument(
     "widevine-device",
     help="Path to the Widevine device (.wvd) file.",
 )
@@ -191,15 +235,34 @@ class Rtve(Plugin):
     )
 
     _IS_VOD_SCHEMA = validate.Schema(
-        validate.xml_xpath_string(".//link[@rel='stylesheet'][contains(@href, 'rtve.play.pf_')][1]/@href"),
+        validate.xml_xpath_string(".//meta[@name='RTVE.tipology'][1]/@content"),
         validate.any(
             validate.all(
-                validate.contains("rtve.play.pf_video."),
+                "videos",
                 validate.transform(lambda _: True),
             ),
             validate.all(
-                validate.contains("rtve.play.pf_directo."),
+                "directos",
                 validate.transform(lambda _: False),
+            ),
+        ),
+    )
+
+    _METADATA_SCHEMA = validate.Schema(
+        validate.xml_xpath_string(".//script[@type='application/ld+json'][contains(text(),'VideoObject')][1]/text()"),
+        validate.parse_json(),
+        {
+            "@type": str,
+            validate.optional("name"): str,
+            validate.optional("partOfSeries"): {
+                validate.optional("genre"): str,
+            },
+        },
+        validate.transform(
+            lambda data: (
+                data["@type"],
+                data.get("name") if data["@type"] == "TelevisionChannel" else None,
+                data.get("partOfSeries", {}).get("genre"),
             ),
         ),
     )
@@ -240,6 +303,41 @@ class Rtve(Plugin):
         },
         validate.get(("page", "items")),
     )
+
+    def _prepare_dash_manifest(self, url):
+        """
+        Validate the DASH manifest with Streamlink's normal parser.
+
+        If the manifest is non-conformant in the known RTVE-specific way,
+        require the user to explicitly enable the compatibility workaround.
+        """
+        manifest, mpd_params = DASHStream.fetch_manifest(
+            self.session,
+            url,
+        )
+
+        try:
+            DASHStream.parse_mpd(manifest, mpd_params)
+        except MPDParsingError as err:
+            err_str = str(err).strip()
+            if err_str not in _NONCONFORMANT_MPD_ERRORS:
+                raise err
+
+            if not self.get_option("allow-nonconformant-mpd"):
+                raise PluginError(
+                    "DASH manifest is not conformant with Streamlink's "
+                    "DASH parser: "
+                    f"{err_str}. "
+                    "If you want to use RTVE's non-conformant manifest, "
+                    "enable --rtve-allow-nonconformant-mpd."
+                ) from err
+
+            log.warning(_NONCONFORMANT_MPD_ERRORS[err_str])
+
+            _patch_nonconformant_manifest()
+
+        except Exception as err:
+            raise PluginError(f"DASH manifest could not be parsed: {err}") from err
 
     def _mux_subtitles(self, streams):
         log.debug("Subtitle muxing enabled")
@@ -295,16 +393,26 @@ class Rtve(Plugin):
         ]
 
     def _get_streams(self):
-        (self.id, has_drm), is_vod = self.session.http.get(
+        page = self.session.http.get(
             self.url,
-            schema=validate.Schema(
-                validate.parse_html(),
-                validate.union((
-                    self._DATA_SETUP_SCHEMA,
-                    self._IS_VOD_SCHEMA,
-                )),
-            ),
+            schema=validate.Schema(validate.parse_html()),
         )
+
+        self.id, has_drm = self._DATA_SETUP_SCHEMA.validate(page)
+        is_vod = self._IS_VOD_SCHEMA.validate(page)
+
+        self.title = validate.Schema(
+            validate.xml_xpath_string(".//title[1]/text()"),
+        ).validate(page)
+
+        metadata_type, self.author, self.category = self._METADATA_SCHEMA.validate(page)
+
+        if metadata_type not in ("TelevisionChannel", "TVEpisode"):
+            log.warning(
+                "Unexpected JSON-LD @type: %s",
+                metadata_type,
+            )
+
         log.debug(
             "Resolved asset: id=%s, DRM=%s, VOD=%s",
             self.id,
@@ -322,6 +430,8 @@ class Rtve(Plugin):
 
             url = self._MPD_URL.format(id=self.id)
             log.debug("Using DASH manifest: %s", url)
+
+            self._prepare_dash_manifest(url)
 
             options = {
                 "license-url": license_url,
