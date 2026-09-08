@@ -2,26 +2,24 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Iterable
 
 from streamlink.logger import getLogger
 from streamlink.options import Options
 from streamlink.plugin import Plugin, PluginError, pluginargument, pluginmatcher
 from streamlink.plugin.api import validate
 
+
 log = getLogger(__name__)
 
 
 @pluginmatcher(
     name="live",
-    pattern=re.compile(
-        r"https?://(?:www\.)?m6\.fr/(?P<channel>[^/?#]+)"
-    ),
+    pattern=re.compile(r"https?://(?:www\.)?m6\.fr/(?P<channel>[^/?#]+)/direct/?$"),
 )
 @pluginmatcher(
     name="vod",
-    pattern=re.compile(
-        r"https?://(?:www\.)?m6\.fr/.*?c_(?P<video_id>\d+)"
-    ),
+    pattern=re.compile(r"https?://(?:www\.)?m6\.fr/.*?c_(?P<video_id>\d+)"),
 )
 @pluginargument(
     "username",
@@ -57,8 +55,7 @@ class M6(Plugin):
         "video/clip_{video_id}/layout?blockPage=1&nbPages=2"
     )
     _LIVE_URL = (
-        "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/"
-        "live/{channel}/layout?blockPage=1&nbPages=2"
+        "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/live/{channel}/layout?blockPage=1&nbPages=2"
     )
 
     _LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
@@ -103,7 +100,7 @@ class M6(Plugin):
     )
 
     _API_KEY = "3_hH5KBv25qZTd_sURpixbQW6a4OsiIzIEF2Ei_2H7TXTGLJb_1Hr4THKZianCQhWK"
-    _DEVICE_ID = '_luid_' + str(uuid.UUID(int=uuid.getnode()))
+    _DEVICE_ID = "_luid_" + str(uuid.UUID(int=uuid.getnode()))
     _PROFILE_ID = "_puid_{account_id}_DEFAULT0"
 
     _CHANNELS = {
@@ -125,10 +122,7 @@ class M6(Plugin):
         password = self.get_option("password")
 
         if not username or not password:
-            raise PluginError(
-                "M6 requires an account. Set --m6-username and "
-                "--m6-password."
-            )
+            raise PluginError("M6 requires an account. Set --m6-username and --m6-password.")
 
         payload = {
             "loginID": username,
@@ -142,13 +136,11 @@ class M6(Plugin):
 
         log.debug("Requesting M6 account authentication")
 
-        account_id, signature, timestamp, error_message, error_details = (
-            self.session.http.post(
-                self._LOGIN_URL,
-                data=payload,
-                headers=headers,
-                schema=self._LOGIN_SCHEMA,
-            )
+        account_id, signature, timestamp, error_message, error_details = self.session.http.post(
+            self._LOGIN_URL,
+            data=payload,
+            headers=headers,
+            schema=self._LOGIN_SCHEMA,
         )
 
         if not account_id:
@@ -190,12 +182,19 @@ class M6(Plugin):
 
     @staticmethod
     def _select_asset(assets, **filters):
-        candidates = [
-            asset
-            for asset in assets
-            if all(asset.get(key) == value for key, value in filters.items())
-               and asset.get("path")
-        ]
+        def matches(asset):
+            for key, value in filters.items():
+                actual = asset.get(key)
+
+                if isinstance(value, (tuple, list, set, frozenset)):
+                    if actual not in value:
+                        return False
+                elif actual != value:
+                    return False
+
+            return bool(asset.get("path"))
+
+        candidates = [asset for asset in assets if matches(asset)]
 
         if not candidates:
             return None
@@ -206,13 +205,13 @@ class M6(Plugin):
                 str(asset.get("quality", "")).lower(),
                 -1,
             ),
-        )["path"]
+        )
 
     def _get_streams(self):
         account_id, jwt = self._get_login_token()
 
         if self.matches["vod"]:
-            self.id = self.match["video_id"]
+            self.id = self.matches["vod"]["video_id"]
 
             if not self.id:
                 return
@@ -225,7 +224,7 @@ class M6(Plugin):
             provider = "usp"
 
         elif self.matches["live"]:
-            self.id = self.match["channel"]
+            self.id = self.matches["live"]["channel"]
 
             if not self.id:
                 return
@@ -242,41 +241,48 @@ class M6(Plugin):
         else:
             return
 
-        token = self._get_upfront_token(token_url, jwt)
-
         assets = self.session.http.get(
             url,
             headers=self._auth_headers(jwt),
             schema=self._ASSETS_SCHEMA,
         )
 
-        manifest = self._select_asset(
+        asset = self._select_asset(
             assets,
             provider=provider,
-            format="dashcenc",
+            format=("dash", "dashcenc"),
             container="h264",
         )
 
-        if not manifest:
-            raise PluginError("Could not resolve manifest")
+        if not asset:
+            raise PluginError("Could not find a supported stream link")
 
-        options = Options({
-            "license-url": self._LICENSE_URL,
-            "license-header": {
-                "Host": "lic.drmtoday.com",
-                "x-dt-auth-token": token,
-            },
-            "license-format": "json",
-            "license-path": ["license"],
-        })
+        manifest = asset["path"]
 
-        if device := self.get_option("widevine-device"):
-            options.set("device", device)
+        drm_type = asset.get("drm", {}).get("type")
 
-        yield from self.session.streams(
-            f"widevine://{manifest}",
-            options=options,
-        ).items()
+        if drm_type and drm_type != "none":
+            token = self._get_upfront_token(token_url, jwt)
+
+            options = Options({
+                "license-url": self._LICENSE_URL,
+                "license-header": {
+                    "Host": "lic.drmtoday.com",
+                    "x-dt-auth-token": token,
+                },
+                "license-format": "json",
+                "license-path": ["license"],
+            })
+
+            if device := self.get_option("widevine-device"):
+                options.set("device", device)
+
+            yield from self.session.streams(
+                f"widevine://{manifest}",
+                options=options,
+            ).items()
+        else:
+            yield from self.session.streams(manifest).items()
 
 
 __plugin__ = M6
