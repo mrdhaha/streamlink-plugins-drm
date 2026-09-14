@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Iterable
+from typing import ClassVar
 
 from streamlink.logger import getLogger
 from streamlink.options import Options
@@ -43,19 +43,19 @@ class M6(Plugin):
 
     _REPLAY_TOKEN_URL = (
         "https://drm.6cloud.fr/v1/customers/m6web/platforms/m6group_web/"
-        "services/m6replay/users/{account_id}/videos/{video_id}/upfront-token"
+        + "services/m6replay/users/{account_id}/videos/{video_id}/upfront-token"
     )
     _LIVE_TOKEN_URL = (
         "https://drm.6cloud.fr/v1/customers/m6web/platforms/m6group_web/"
-        "services/6play/users/{account_id}/live/{channel}/upfront-token"
+        + "services/6play/users/{account_id}/live/{channel}/upfront-token"
     )
 
     _VIDEO_URL = (
         "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/"
-        "video/clip_{video_id}/layout?blockPage=1&nbPages=2"
+        + "video/clip_{video_id}/layout?blockPage=1&nbPages=2"
     )
     _LIVE_URL = (
-        "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/live/{channel}/layout?blockPage=1&nbPages=2"
+        "https://layout.6cloud.fr/front/v1/m6web/m6group_web/main/token-web-32/" + "live/{channel}/layout?blockPage=1&nbPages=2"
     )
 
     _LICENSE_URL = "https://lic.drmtoday.com/license-proxy-widevine/cenc/"
@@ -117,7 +117,7 @@ class M6(Plugin):
     _DEVICE_ID = "_luid_" + str(uuid.UUID(int=uuid.getnode()))
     _PROFILE_ID = "_puid_{account_id}_DEFAULT0"
 
-    _CHANNELS = {
+    _CHANNELS: ClassVar[dict[str, str]] = {
         "m6": "M6",
         "w9": "W9",
         "6ter": "6T",
@@ -264,11 +264,7 @@ class M6(Plugin):
         metadata = self._METADATA_SCHEMA.validate(data)
         self.title = metadata.get("title")
         self.author = metadata.get("serviceName")
-        self.category = (
-            metadata.get("video", {}).get("programType")
-            if metadata.get("video") is not None
-            else None
-        )
+        self.category = metadata.get("video", {}).get("programType") if metadata.get("video") is not None else None
 
         assets = self._ASSETS_SCHEMA.validate(data)
         asset = self._select_asset(

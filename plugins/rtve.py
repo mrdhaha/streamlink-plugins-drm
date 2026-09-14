@@ -50,15 +50,13 @@ from streamlink.utils.url import update_scheme, url_concat
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    # noinspection PyProtectedMember
-    from lxml.etree import _Element
-
 
 log = getLogger(__name__)
 
 
 _NONCONFORMANT_MPD_ERRORS = {
-    "Could not find required attribute Representation@bandwidth": "RTVE DASH manifest is non-conformant (missing bandwidth on a text Representation); using compatibility workaround"
+    "Could not find required attribute Representation@bandwidth": "RTVE DASH manifest is non-conformant (missing bandwidth on a text "
+    + "Representation); using compatibility workaround",
 }
 
 
@@ -73,12 +71,7 @@ def _patch_nonconformant_manifest():
     if Representation.__init__ is not _original_representation_init:
         return
 
-    def _representation_init(
-        self,
-        node: _Element,
-        *args,
-        **kwargs
-    ) -> None:
+    def _representation_init(self, node, *args, **kwargs) -> None:
         if "bandwidth" not in node.attrib:
             node.set("bandwidth", "1")
 
@@ -324,12 +317,10 @@ class Rtve(Plugin):
                 raise err
 
             if not self.get_option("allow-nonconformant-mpd"):
-                raise PluginError(
-                    "DASH manifest is not conformant with Streamlink's "
-                    "DASH parser: "
-                    f"{err_str}. "
-                    "If you want to use RTVE's non-conformant manifest, "
-                    "enable --rtve-allow-nonconformant-mpd."
+                raise ValueError(
+                    f"DASH parser: {err_str}. "
+                    + "If you want to use RTVE's non-conformant manifest, "
+                    + "enable --rtve-allow-nonconformant-mpd."
                 ) from err
 
             log.warning(_NONCONFORMANT_MPD_ERRORS[err_str])
