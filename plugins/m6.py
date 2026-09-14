@@ -87,7 +87,6 @@ class M6(Plugin):
     )
 
     _ASSETS_SCHEMA = validate.Schema(
-        validate.parse_json(),
         {
             "blocks": [dict],
         },
@@ -97,6 +96,21 @@ class M6(Plugin):
         ),
         validate.get(0),
         validate.get(("content", "items", 0, "itemContent", "video", "assets")),
+    )
+
+    _METADATA_SCHEMA = validate.Schema(
+        {
+            "seo": {
+                validate.optional("title"): validate.any(None, str),
+                validate.optional("serviceName"): validate.any(None, str),
+                validate.optional("video"): validate.none_or_all(
+                    {
+                        validate.optional("programType"): validate.any(None, str),
+                    },
+                ),
+            },
+        },
+        validate.get("seo"),
     )
 
     _API_KEY = "3_hH5KBv25qZTd_sURpixbQW6a4OsiIzIEF2Ei_2H7TXTGLJb_1Hr4THKZianCQhWK"
@@ -241,12 +255,22 @@ class M6(Plugin):
         else:
             return
 
-        assets = self.session.http.get(
+        data = self.session.http.get(
             url,
             headers=self._auth_headers(jwt),
-            schema=self._ASSETS_SCHEMA,
+            schema=validate.Schema(validate.parse_json()),
         )
 
+        metadata = self._METADATA_SCHEMA.validate(data)
+        self.title = metadata.get("title")
+        self.author = metadata.get("serviceName")
+        self.category = (
+            metadata.get("video", {}).get("programType")
+            if metadata.get("video") is not None
+            else None
+        )
+
+        assets = self._ASSETS_SCHEMA.validate(data)
         asset = self._select_asset(
             assets,
             provider=provider,
